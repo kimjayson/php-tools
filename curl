@@ -1,3 +1,122 @@
+    function curl($aInPut, $iRetry = 1)
+    {
+        if ($this->_timeoutSec > 0 && $this->_connectTimeoutSec > 0) {
+            $this->_options = array(
+                CURLOPT_POST           => $this->_post,
+                CURLOPT_RETURNTRANSFER => 1,
+                CURLOPT_TIMEOUT        => $this->_timeoutSec,
+                CURLOPT_CONNECTTIMEOUT => $this->_connectTimeoutSec,
+            );
+        } else {
+            $this->_options = array(
+                CURLOPT_POST              => $this->_post,
+                CURLOPT_RETURNTRANSFER    => 1,
+                CURLOPT_NOSIGNAL          => 1,
+                CURLOPT_TIMEOUT_MS        => $this->_timeoutMsec,
+                CURLOPT_CONNECTTIMEOUT_MS => $this->_connectTimeoutMsec,
+            );
+        }
+
+        //增加trace的headers
+        $this->_options[CURLOPT_HTTPHEADER] = Trace::addHttpTraceHeader();
+        $this->_firstCspanId = Trace::cspanId();
+        $this->_cspanId = Trace::cspanId();
+        if ($this->_version !== '') {
+            $aInPut['version'] = $this->_version;
+        }
+        //增加headers
+        $jsonHearFlag = false;
+        if (!empty($this->_headers)) {
+            foreach ($this->_headers as $sHeaderVal) {
+                if (false !== strpos($sHeaderVal, 'application/json')) {
+                        $jsonHearFlag = true;
+                        //continue;
+                }
+                $this->_options[CURLOPT_HTTPHEADER][] = $sHeaderVal;
+            }
+        }
+        
+       //备份原始的传入参数 
+        $tInput         = $aInPut;
+        $iRetriedTimes   = 0;
+        do {
+            $aInPut = $tInput;
+            //执行beforeHooks
+            $this->executeBeforeHooks($aInput);
+            //构造请求参数
+            if($jsonHearFlag){
+                $sRequestParams = json_encode($aInPut);
+            } else {
+                $sRequestParams = http_build_query($aInPut);
+            }
+            if (empty($sHttpUrl)) {
+                if (count($this->_endpoints) == 0) {
+                    Log::err('httpclient get endpoints empty. serverName: ' . $this->_serviceName);
+                    return false;
+                }
+                $endpoint = Scheduler::pickEndpoint(array('endpoints' => $this->_endpoints), $srvIndex);
+                $sHttpUrl = rtrim($this->_schema . '://' . $endpoint['ip'] . ':' . $endpoint['port'] . $this->_prefix, '/') . '/' . $this->_action;
+            }
+            //设置请求参数
+            if ($this->_options[CURLOPT_POST] && !empty($sRequestParams)) {
+                $this->_options[CURLOPT_POSTFIELDS] = $sRequestParams;
+            } elseif (!empty($sRequestParams)) {
+                $sHttpUrl = $sHttpUrl . '?' . $sRequestParams;
+            }
+            //初始化curl
+            $hCurlInstance  = curl_init($sHttpUrl);
+            $this->_httpUrl = $sHttpUrl;
+            var_dump($sHttpUrl);
+
+            //初始化curl options
+            foreach ($this->_options as $sKey => $iValue) {
+                curl_setopt($hCurlInstance, $sKey, $iValue);
+            }
+            //exec请求,获取respose结果
+            $before  = microtime(true);
+            $sResult = curl_exec($hCurlInstance);
+            $after   = microtime(true);
+            //单位ms
+            $latency = intval(($after - $before) * 1000000) / 1000;
+            //获取curl错误信息
+            $iErrno  = curl_errno($hCurlInstance);
+            $aErrmsg = curl_error($hCurlInstance);
+            //尝试json_decode返回结果
+            $aResult         = self::jsonToArray($sResult);
+            $iHttpCode       = curl_getinfo($hCurlInstance, CURLINFO_HTTP_CODE);
+            $this->_response = array(
+                'errno'   => $iErrno,           // curl errno
+                'code'    => $iHttpCode,        // http status code
+                'errmsg'  => $aErrmsg,          // curl errmsg
+                'latency' => $latency,          // curl 耗时
+                'result'  => $aResult,          // 返回结果
+                'retry'   => $iRetriedTimes,    // 标记是否需要重试
+            );
+            //检测是否需要retry
+            if ($iHttpCode != self::HTTP_STATUS_SUCC || $iErrno !== 0 || empty($aResult) || ( !empty($this->_needRetryCallback) && call_user_func_array($this->_needRetryCallback, array($this->_response)) ) ) {
+                $this->_needRetry = true;
+            }
+            //执行afterhooks
+            $this->executeAfterHooks($aInPut, $this->_response);
+            if ($this->_needRetry) {
+                $this->_endpoints[$srvIndex]['disabled'] = true;
+                $this->_options[CURLOPT_HTTPHEADER]      = Trace::addHttpTraceHeader();
+                $this->_cspanId                          = Trace::cspanId();
+                $this->_needRetry                        = false;
+                //后续的vote
+                unset($sHttpUrl);
+            } else {
+                //后续的vote
+                break;
+            }
+        } while($iRetriedTimes++ < $iRetry);
+
+        //处理errno
+        $this->handleOutput($this->_response);
+
+        return $this->_response;
+    }    
+    
     function mcurl($aInputs, $extraQueryParams = array())
     {
         // 组装curl句柄基础配置，重置所有相关变量。
