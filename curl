@@ -1,0 +1,53 @@
+    function mcurl($aInputs, $extraQueryParams = array())
+    {
+        // 组装curl句柄基础配置，重置所有相关变量。
+        foreach ($this->handles as $handle) {
+            $handle->init();
+        }
+
+        do {
+            // 每个句柄各自组装自己的curl参数。已经请求成功的跳过。
+            $hMCurlInstance = curl_multi_init();
+            foreach ($this->handles as $key => $handle) {
+                if (!$handle->needRequest()) {
+                    continue;
+                }
+                $hCurl = $handle->buildCurlInstance($aInputs[$key], $extraQueryParams);
+                curl_multi_add_handle($hMCurlInstance, $hCurl);
+            }
+
+            // 真正执行 curl_multi请求
+            $active = null;
+            do {
+                $mrc = curl_multi_exec($hMCurlInstance, $active);
+            }while ($mrc == CURLM_CALL_MULTI_PERFORM);
+            while ($active && $mrc == CURLM_OK) {
+                if (curl_multi_select($hMCurlInstance) != -1) {
+                    do {
+                        $mrc = curl_multi_exec($hMCurlInstance, $active);
+                    } while ($mrc == CURLM_CALL_MULTI_PERFORM);
+                }
+            }
+
+            $readInfos = array();
+            foreach ($this->handles as $key => $handle) {
+                $readInfos[] = curl_multi_info_read($hMCurlInstance);
+            }
+            // 每个句柄个字处理自己的执行结果，如判断是否需要重试、执行钩子等
+            $needRetryCount = 0;
+            foreach ($this->handles as $key => $handle) {
+                $handle->procResponse($hMCurlInstance, $readInfos);
+                if ($handle->needRequest()) {
+                    $needRetryCount++;
+                }
+            }
+            curl_multi_close($hMCurlInstance);
+        }while($needRetryCount > 0);
+
+        // 返回执行结果
+        $responseArr = array();
+        foreach ($this->handles as $key => $handle) {
+            $responseArr[$key] = $handle->getResponse();
+        }
+        return $responseArr;
+    }
