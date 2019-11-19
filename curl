@@ -1,3 +1,33 @@
+
+function http_request($url, $type = "get", $res = "json", $postData = '')
+{
+		//1.初始化curl
+		$curl = curl_init();
+		//2.设置curl的参数
+		curl_setopt($curl, CURLOPT_SAFE_UPLOAD, true);
+		curl_setopt($curl, CURLOPT_URL, $url);
+		curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, FALSE);
+		curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, false);
+		curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
+		if ($type == "post") {
+			curl_setopt($curl, CURLOPT_POST, 1);
+			curl_setopt($curl, CURLOPT_POSTFIELDS, $postData);
+		}
+		//3.采集
+		$output = curl_exec($curl);
+		$error = curl_error($curl);
+		//4.关闭
+		curl_close($curl);
+		if ($output == NULL) {
+			return json_decode($error, true);
+		}
+		$result = $output;
+		if ($res === 'json') {
+			$result = json_decode($output, true);
+		}
+		return $result;
+}    
+    
     function curl($aInPut, $iRetry = 1)
     {
         if ($this->_timeoutSec > 0 && $this->_connectTimeoutSec > 0) {
